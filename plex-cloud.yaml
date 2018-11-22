@@ -1,0 +1,132 @@
+Mappings:
+  RegionMap:
+    us-east-1:
+      AMI: ami-9887c6e7
+Outputs:
+  SampleOutput:
+    Description: InstanceId of the newly created EC2 instance
+    Value: SampleVal
+Parameters:
+  BucketNameSuffix:
+    Description: Bucket names must be globally unique. Adds a suffix to bucket name.
+    Type: String
+  HostedZone:
+    Default: therealbenforce.com
+    Description: Hosted zone for public route 53 record
+    Type: String
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instance
+    Type: String
+  SshIp:
+    Default: 127.0.0.1/32
+    Description: Address to SSH from. Defaults to local host.
+    Type: String
+  VpcId:
+    Description: VpcId you'd like to deploy to.
+    Type: AWS::EC2::VPC::Id
+Resources:
+  AutoscalingGroup:
+    Properties:
+      AvailabilityZones:
+        - us-east-1a
+        - us-east-1b
+      DesiredCapacity: '1'
+      HealthCheckType: EC2
+      LaunchConfigurationName: !Ref 'LaunchConfiguration'
+      MaxSize: '1'
+      MinSize: '1'
+    Type: AWS::AutoScaling::AutoScalingGroup
+  LaunchConfiguration:
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          default:
+            - packages
+            - plex_install
+            - signal
+        packages:
+          packages:
+            yum:
+              git: []
+              unzip: []
+              wget: []
+        plex_install:
+          commands:
+            '01_download':
+              command: wget https://github.com/mrworf/plexupdate/archive/master.zip
+              cwd: /home/centos
+            '02_unzip':
+              command: unzip master.zip
+              cwd: /home/centos
+            '03_become_root':
+              command: sudo su
+              cwd: /home/centos
+            '04_run_mr_worf':
+              command: bash ./plexupdate.sh -a -p -s
+              cwd: /home/centos/plexupdate-master
+        signal:
+          commands:
+            test:
+              command: echo "$CFNTEST" > text.txt
+              cwd: '~'
+              env:
+                CFNTEST: I come from signal.
+    Properties:
+      ImageId: !FindInMap
+        - RegionMap
+        - !Ref 'AWS::Region'
+        - AMI
+      InstanceType: t3.micro
+      KeyName: !Ref 'KeyName'
+      SecurityGroups:
+        - !Ref 'PlexSecurityGroup'
+      UserData: !Base64
+        Fn::Join:
+          - ''
+          - - '#!/bin/bash'
+            - "\n"
+            - yum install epel-release
+            - "\n"
+            - yum -y install python-pip
+            - "\n"
+            - /usr/bin/easy_install --script-dir /opt/aws/bin https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
+            - "\n"
+            - /opt/aws/bin/cfn-init -v
+            - ' --region '
+            - !Ref 'AWS::Region'
+            - ' --stack '
+            - !Ref 'AWS::StackId'
+            - ' --resource LaunchConfiguration'
+            - "\n"
+    Type: AWS::AutoScaling::LaunchConfiguration
+  PlexSecurityGroup:
+    Properties:
+      GroupDescription: Traffic to and from the plex server
+      GroupName: Plex
+      SecurityGroupEgress:
+        - CidrIp: '0.0.0.0/0'
+          Description: Software downloads
+          FromPort: '0'
+          IpProtocol: tcp
+          ToPort: '65535'
+      SecurityGroupIngress:
+        - CidrIp: '0.0.0.0/0'
+          Description: Plex
+          FromPort: '32400'
+          IpProtocol: tcp
+          ToPort: '32400'
+        - CidrIp: !Ref 'SshIp'
+          Description: SSH, change to your IP.
+          FromPort: '22'
+          IpProtocol: tcp
+          ToPort: '22'
+      VpcId: !Ref 'VpcId'
+    Type: AWS::EC2::SecurityGroup
+  S3Bucket:
+    Properties:
+      AccessControl: Private
+      BucketName: !Join
+        - ''
+        - - plex-media-
+          - !Ref 'BucketNameSuffix'
+    Type: AWS::S3::Bucket
